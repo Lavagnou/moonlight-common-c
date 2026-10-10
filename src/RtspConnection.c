@@ -1142,7 +1142,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             if (hostPyroWaveBitstreamId[0] == '\0') {
                 Limelog("PyroWave host did not advertise its bitstream revision (expected %s)\n", PYROWAVE_BITSTREAM_ID);
             }
-            else if (strcmp(hostPyroWaveBitstreamId, PYROWAVE_BITSTREAM_ID) != 0) {
+            else if (strcmp(hostPyroWaveBitstreamId, PYROWAVE_BITSTREAM_ID) != 0 &&
+                     strcmp(hostPyroWaveBitstreamId, PYROWAVE_BITSTREAM_ID_COMPAT) != 0) {
                 Limelog("WARNING: PyroWave bitstream revision mismatch (host %s, client %s)\n",
                         hostPyroWaveBitstreamId, PYROWAVE_BITSTREAM_ID);
             }

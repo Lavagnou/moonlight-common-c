@@ -270,7 +270,12 @@ typedef struct _DECODE_UNIT {
 // PyroWave bitstream identity (first 8 hex digits of the pyrowave commit the
 // codec was vendored from). The bitstream has no version field of its own, so
 // Sunshine hosts advertise theirs in the RTSP DESCRIBE response.
-#define PYROWAVE_BITSTREAM_ID "186f0393"
+// LavArtemis builds upstream v1 (Lavagnou/pyrowave, branch lavartemis).
+#define PYROWAVE_BITSTREAM_ID "502a3b52"
+// The pre-freeze revision vibeshine and Nonary/moonlight-qt build. v1 only
+// added a file-container header and a no-op-by-default range scale, so the
+// network bitstream is identical and both IDs are accepted without a warning.
+#define PYROWAVE_BITSTREAM_ID_COMPAT "186f0393"
 
 // x-ss-video[0].pyrowaveFeatures bits sent in the RTSP ANNOUNCE.
 // Partial-frame decoding needs no bit: a record-framed client always decodes
