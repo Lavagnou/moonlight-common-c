@@ -112,6 +112,8 @@ static uint64_t intervalStartTimeMs;
 static int lastIntervalLossPercentage;
 static int lastConnectionStatusUpdate;
 static uint32_t currentEnetSequenceNumber;
+static uint16_t microphoneSequenceNumber;
+static uint32_t microphoneTimestamp;
 static uint64_t firstFrameTimeMs;
 
 static LINKED_BLOCKING_QUEUE referenceFrameControlQueue;
@@ -143,6 +145,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_EXEC_SERVER_CMD 13
 #define IDX_SET_CLIPBOARD 14
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 15
+#define IDX_MICROPHONE_DATA 16
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -164,6 +167,7 @@ static const short packetTypesGen3[] = {
     -1,     // Execute Server Command (unused)
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -182,6 +186,7 @@ static const short packetTypesGen4[] = {
     -1,     // Execute Server Command (unused)
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -200,6 +205,7 @@ static const short packetTypesGen5[] = {
     -1,     // Execute Server Command (unused)
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -218,6 +224,7 @@ static const short packetTypesGen7[] = {
     -1,     // Execute Server Command (unused)
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -236,6 +243,7 @@ static const short packetTypesGen7Enc[] = {
     0x3000, // Execute Server Command (Apollo protocol extension)
     0x3001, // Set Clipboard (Apollo protocol extension)
     0x3002, // File transfer nonce request (Apollo protocol extension)
+    0x3080, // Microphone data (LavArtemis protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -322,6 +330,8 @@ static bool supportsIdrFrameRequest;
 // Initializes the control stream
 int initializeControlStream(void) {
     stopping = false;
+    microphoneSequenceNumber = 0;
+    microphoneTimestamp = 0;
     PltCreateEvent(&idrFrameRequiredEvent);
     LbqInitializeLinkedBlockingQueue(&referenceFrameControlQueue, 20);
     LbqInitializeLinkedBlockingQueue(&frameFecStatusQueue, 8); // Limits number of frame status reports per periodic ping interval
@@ -725,7 +735,14 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
     if (encryptedControlStream) {
         PNVCTL_ENCRYPTED_PACKET_HEADER encPacket;
         PNVCTL_ENET_PACKET_HEADER_V2 packet;
-        char tempBuffer[256];
+        char tempBuffer[1024];
+
+        // The plaintext is staged on the stack. This used to be guarded by an LC_ASSERT only,
+        // which compiles out of release builds and let an oversized payload overrun the stack.
+        if (sizeof(*packet) + paylen > sizeof(tempBuffer)) {
+            Limelog("Control message too large to encrypt: %d bytes\n", (int)paylen);
+            return false;
+        }
 
         enetPacket = enet_packet_create(NULL,
                                         sizeof(*encPacket) + AES_GCM_TAG_LENGTH + sizeof(*packet) + paylen,
@@ -744,7 +761,6 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         encPacket->seq = currentEnetSequenceNumber++;
 
         // Construct the plaintext data for encryption
-        LC_ASSERT(sizeof(*packet) + paylen < sizeof(tempBuffer));
         packet = (PNVCTL_ENET_PACKET_HEADER_V2)tempBuffer;
         packet->type = ptype;
         packet->payloadLength = paylen;
@@ -2137,4 +2153,46 @@ int LiSendEmptyPayload() {
         ENET_PACKET_FLAG_RELIABLE,
         false
     );
+}
+
+// Send one Opus-encoded microphone frame to the streaming machine
+int LiSendMicrophoneData(const unsigned char* opusData, int opusLength, uint32_t frameSamples) {
+    uint8_t payload[6 + LI_MAX_MICROPHONE_FRAME_LENGTH];
+
+    if (opusData == NULL || opusLength <= 0 || opusLength > LI_MAX_MICROPHONE_FRAME_LENGTH) {
+        return -1;
+    }
+
+    // Microphone audio only travels inside the encrypted control stream: it is never sent
+    // in the clear, and never to a host that doesn't know the message (GFE, older Sunshine).
+    if (peer == NULL || stopping || !IS_SUNSHINE() || !encryptedControlStream ||
+        packetTypes[IDX_MICROPHONE_DATA] == -1) {
+        return -2;
+    }
+
+    // Little-endian sequence number and 48 kHz timestamp, then the Opus frame. The sequence
+    // number lets the host notice a lost frame and rebuild it from the next frame's FEC.
+    payload[0] = (uint8_t)(microphoneSequenceNumber >> 0);
+    payload[1] = (uint8_t)(microphoneSequenceNumber >> 8);
+    payload[2] = (uint8_t)(microphoneTimestamp >> 0);
+    payload[3] = (uint8_t)(microphoneTimestamp >> 8);
+    payload[4] = (uint8_t)(microphoneTimestamp >> 16);
+    payload[5] = (uint8_t)(microphoneTimestamp >> 24);
+    memcpy(&payload[6], opusData, opusLength);
+
+    microphoneSequenceNumber++;
+    microphoneTimestamp += frameSamples;
+
+    // Unsequenced: a late voice frame is worthless, and a reliable send would block the
+    // capture thread for up to 10 ms waiting for an ack.
+    if (!sendMessageEnet(packetTypes[IDX_MICROPHONE_DATA],
+                         (short)(6 + opusLength),
+                         payload,
+                         CTRL_CHANNEL_MICROPHONE,
+                         ENET_PACKET_FLAG_UNSEQUENCED,
+                         false)) {
+        return -1;
+    }
+
+    return 0;
 }

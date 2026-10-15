@@ -623,6 +623,16 @@ int LiSendExecServerCmd(uint8_t cmdId);
 // This method exists here for workaround client side wifi sleeps.
 int LiSendEmptyPayload();
 
+// Largest Opus frame LiSendMicrophoneData() accepts (160 kbps at 20 ms).
+#define LI_MAX_MICROPHONE_FRAME_LENGTH 400
+
+// This function sends one Opus-encoded frame of the client's microphone (48 kHz) to the host,
+// which plays it into a virtual microphone. frameSamples is the frame's duration in 48 kHz
+// samples (960 for 20 ms). Only LavApollo understands the message, and only inside an encrypted
+// control stream; otherwise nothing is sent and a negative value is returned.
+// Call it from a single thread, and stop calling it before LiStopConnection().
+int LiSendMicrophoneData(const unsigned char* opusData, int opusLength, uint32_t frameSamples);
+
 // This function queues a relative mouse move event to be sent to the remote server.
 int LiSendMouseMoveEvent(short deltaX, short deltaY);
 
